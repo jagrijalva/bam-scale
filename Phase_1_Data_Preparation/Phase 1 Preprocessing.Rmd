@@ -1,0 +1,475 @@
+---
+title: "Appendix 2: Phase 1 Pre-Processing"
+author: "Jessala Grijalva"
+date: "September 2023"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+# Introduction
+This R Markdown document provides a comprehensive script for data pre-processing, including data cleaning, missing value imputation, and feature engineering, for the LNS 2006 dataset.
+
+## SOMETHING
+
+### Load Libraries
+
+```{r}
+library(pacman)
+p_load(dplyr, tidyr, mice, forcats, factoextra, skimr, stringr, readr)
+```
+
+### Load Data
+
+```{r}
+# Full path directly
+load("~/Desktop/Dissertation Project/Data/Original Data/20862-0003-Data.rda")
+```
+
+## Data Pre-Processing
+
+### Subsetting and Renaming Columns
+
+```{r}
+# Subset and filter
+# Rename columns
+lns_subset <- da20862.0003 %>% 
+  dplyr::filter(BORNUS %in% c("(1) Mainland US", "(2) Puerto Rico") | NATUSCIT == "(1) YES") %>% 
+  dplyr::select(AGE, SEX, REDUC, HHINC, RELIGION, ANCESTRY, BORNUS, NATUSCIT, BIRTHPLC,
+                PARBORN, GRANBORN, AMERICAN, RGIDENT, LAIDENT, KEEPSPAN, LEARNENG, 
+                BLEND, DISTINCT, IMMPOLICY, DREAMACT, IMMVIEW, IDEOLOGY, RACE1,
+                FEELPART, PARTYID, PRIMEID, VOTEPRES, NONVPRES, SAYSO, GOVTRUST, 
+                INCSUPP, HEALTH, WT_NATION_REV) %>% 
+  dplyr::rename(WEIGHT = WT_NATION_REV)
+```
+
+### Initial Data Structure
+
+```{r}
+head(lns_subset, 5)
+```
+
+## Variable Creation
+
+### Control and Descriptive Variables
+
+```{r}
+# Combine NATUSCIT and BIRTHPLC into BIRTH_ORIGIN
+lns_subset <- lns_subset %>%
+  mutate(BIRTH_ORIGIN = case_when(
+    !is.na(NATUSCIT) ~ as.character(NATUSCIT),
+    !is.na(BIRTHPLC) ~ as.character(BIRTHPLC),
+    TRUE ~ "Missing"
+     )
+  )
+
+# Create NATIONALITY Variable from BORNUS and BIRTHPLC
+lns_subset <- lns_subset %>%
+  mutate(
+    NATIONALITY = case_when(
+      BORNUS %in% c("(1) Mainland US", "(2) Puerto Rico") ~ "US Born",
+      BIRTHPLC == "(01) Mexico" ~ "Mexico",
+      BIRTHPLC == "(02) Puerto Rico" ~ "Puerto Rico",
+      BIRTHPLC == "(03) Cuba" ~ "Cuba",
+      BIRTHPLC %in% c("(04) Central American Countries") ~ "Central American",
+      is.na(BORNUS) & is.na(BIRTHPLC) ~ "Missing",
+      TRUE ~ "Other Latin Countries"
+    )
+  )
+
+# Recode REDUC to EDUCATION
+lns_subset <- lns_subset %>%
+  mutate(
+    EDUCATION = case_when(
+      !is.na(REDUC) ~ as.character(REDUC),  # Keep original value if REDUC is not NA
+      TRUE ~ "Missing"  # Assign "Missing" if REDUC is NA
+    )
+  )
+
+# Modify the dataset to create the GEN_STATUS variable
+lns_subset <- lns_subset %>%
+  mutate(
+    GEN_STATUS = case_when(
+      BORNUS == "(3) Some other country" ~ "First Generation",
+      BORNUS %in% c("(1) Mainland US", "(2) Puerto Rico") & PARBORN != "(2) Both parents born in the U.S." ~ "Second Generation",
+      BORNUS %in% c("(1) Mainland US", "(2) Puerto Rico") & PARBORN == "(2) Both parents born in the U.S." ~ "Third Generation Plus",
+      TRUE ~ "Other"
+    )
+  )
+
+# Drop rows where GEN_STATUS is "Other"
+lns_subset <- lns_subset %>%
+  filter(GEN_STATUS != "Other")
+
+# Modify the dataset to create the GEN_STATUS_NUM variable
+lns_subset <- lns_subset %>%
+  mutate(
+    GEN_STATUS_num = as.numeric(case_when(
+      GEN_STATUS == "First Generation" ~ 1,
+      GEN_STATUS == "Second Generation" ~ 2,
+      GEN_STATUS == "Third Generation Plus" ~ 3,
+      TRUE ~ NA_real_  # for missing or other categories, if any
+    ))
+  )
+
+# Recode RELIGION into Christians, Other, Non-Secular categories
+lns_subset <- lns_subset %>%
+  mutate(
+    RELIGION = case_when(
+      RELIGION %in% c("(1) Catholic", "(0) Jehovah's Witness", "(3) Southern Baptist", 
+                      "(5) Other Protestant", "(4) Pentecostal", "(2) Assemblies of God") ~ "Christian",
+      RELIGION == "(8) Don't identify with any religious denomination" ~ "Non-Secular",
+      RELIGION %in% c("(9) Other", "(6) Mormon", "(7) Jewish") ~ "Other",
+      TRUE ~ as.character(RELIGION)  # Keep original value if not recoded
+    )
+  )
+```
+
+### Feature Engineering for Independent Variables
+
+```{r}
+# Convert AMERICAN, LEARNENG, and BLEND to numeric
+# Convert 'AMERICAN' to numerical
+lns_subset$AMERICAN_num <- as.numeric(factor(lns_subset$AMERICAN, 
+        levels = c("(1) Not at all", 
+                      "(2) Not very strongly", 
+                              "(3) Somewhat strongly", 
+                                    "(4) Very strongly")))
+
+# Convert 'LEARNENG' to numerical
+lns_subset$LEARNENG_num <- as.numeric(factor(lns_subset$LEARNENG, 
+          levels = c("(1) Not at all important", 
+                       "(2) Not very important", 
+                              "(3) Somewhat important", 
+                                    "(4) Very Important")))
+
+# Convert 'BLEND' to numerical
+lns_subset$BLEND_num <- as.numeric(factor(lns_subset$BLEND, 
+          levels = c("(1) Not at all important", 
+                "(2) Somewhat important", 
+                     "(3) Very important")))
+
+# Check if the conversion has worked as expected by looking at the first few rows
+head(lns_subset[, c("AMERICAN", "AMERICAN_num", "LEARNENG", "LEARNENG_num", "BLEND", "BLEND_num")])
+
+# Map the original RGIDENT and LAIDENT columns to numerical values
+# Using factor levels for the mapping
+lns_subset$RGIDENT_num <- as.numeric(factor(lns_subset$RGIDENT, 
+                levels = c("(1) Not at all", "(2) Not very strongly", 
+                      "(3) Somewhat strongly", "(4) Very strongly")))
+
+lns_subset$LAIDENT_num <- as.numeric(factor(lns_subset$LAIDENT, 
+                 levels = c("(1) Not at all", "(2) Not very strongly", 
+                        "(3) Somewhat strongly", "(4) Very strongly")))
+
+# Calculate the row-wise mean for CULTURAL_IDENTITY
+lns_subset$CULTURAL_IDENTITY <- rowMeans(cbind(lns_subset$RGIDENT_num, lns_subset$LAIDENT_num), na.rm = TRUE)
+
+# Checking the first few rows to see if CULTURAL_IDENTITY has been created accurately
+head(lns_subset[, c("RGIDENT_num", "LAIDENT_num", "CULTURAL_IDENTITY")])
+
+# Convert DISTINCT to numeric
+lns_subset$DISTINCT_num <- as.numeric(lns_subset$DISTINCT)
+
+# Convert KEEPSPAN to numeric
+lns_subset$KEEPSPAN_num <- as.numeric(lns_subset$KEEPSPAN)
+
+# Verify the first few rows
+head(lns_subset)
+```
+
+### Feature Engineering for Dependent Variables
+
+```{r}
+# Recode the 'IDEOLOGY' variable and convert it to numerical
+lns_subset <- lns_subset %>%
+  mutate(IDEOLOGY = case_when(
+    IDEOLOGY == "(1) Conservative" ~ 1,
+    IDEOLOGY == "(3) Middle of the Road" ~ 2,
+    IDEOLOGY == "(4) Don't think of self in these terms" ~ 2,
+    IDEOLOGY == "(2) Liberal" ~ 3,
+    IDEOLOGY == "(5) Don't know" ~ 2
+  ))
+
+# Convert the recoded 'IDEOLOGY' variable to numeric (although it should already be numeric)
+lns_subset$IDEOLOGY_num <- as.numeric(lns_subset$IDEOLOGY)
+
+# Recode the 'FEELPART' variable based on the coding scheme and convert to numeric
+lns_subset <- lns_subset %>%
+  mutate(FEELPART = case_when(
+    FEELPART == "(5) My feelings have not changed" ~ 3,
+    FEELPART == "(3) I feel much closer to the Democrats than I used to" ~ 5,
+    FEELPART == "(6) Don't Know/Other" ~ 3,
+    FEELPART == "(2) I feel somewhat closer to the Republicans than I used to" ~ 2,
+    FEELPART == "(4) I feel somewhat closer to the Democrats than I used to" ~ 4,
+    FEELPART == "(1) I feel much closer to the Republicans than I used to" ~ 1,
+    TRUE ~ NA_real_  # Set to NA for any other unexpected categories
+  ))
+
+# Convert the recoded 'FEELPART' variable to numeric
+lns_subset$FEELPART_num <- as.numeric(lns_subset$FEELPART)
+
+# Reverse code the 'IMMVIEW' variable and convert to numeric
+lns_subset <- lns_subset %>%
+  mutate(IMMVIEW = case_when(
+    IMMVIEW == "(1) Immigrants today strengthen our country because of their hard work and talents" ~ 2,
+    IMMVIEW == "(2) Or immigrants today are a burden on our country because they take our jobs, housing, and health care." ~ 1,
+  ))
+
+# Convert the reversed 'IMMVIEW' variable to numeric
+lns_subset$IMMVIEW_num <- as.numeric(lns_subset$IMMVIEW)
+
+# Recode the 'PARTYID' variable based on the new coding scheme and convert to numeric
+lns_subset <- lns_subset %>%
+  mutate(PARTYID = case_when(
+    PARTYID == "(1) Democrat" ~ 3,
+    PARTYID == "(2) Republican" ~ 1,
+    PARTYID == "(3) Independent" ~ 2,
+    PARTYID == "(4) Don't care" ~ 2,
+    PARTYID == "(5) Don't know/other party" ~ 2,
+  ))
+
+# Convert the recoded 'PARTYID' variable to numeric
+lns_subset$PARTYID_num <- as.numeric(lns_subset$PARTYID)
+
+# Recode 'IMMPOLICY' based on the new coding scheme and partial string matching
+lns_subset <- lns_subset %>%
+  mutate(IMMPOLICY = case_when(
+    str_detect(IMMPOLICY, "Immediate legalization of current undocumented immigrants") ~ 5,
+    str_detect(IMMPOLICY, "A guest worker program that permits immigrants to be in t") ~ 4,
+    str_detect(IMMPOLICY, "None of these") ~ 3,
+    str_detect(IMMPOLICY, "A guest worker program leading to legalization eventually") ~ 2,
+    str_detect(IMMPOLICY, "An effort to seal or close off the border to stop illegal") ~ 1,
+    TRUE ~ NA_real_  # Set to NA for any other unexpected categories
+  ))
+
+# Convert the recoded 'IMMPOLICY' variable to numeric
+lns_subset$IMMPOLICY_num <- as.numeric(lns_subset$IMMPOLICY)
+
+# Convert the recoded 'IMMPOLICY' variable to numeric
+lns_subset$GOVTRUST_num <- as.numeric(lns_subset$GOVTRUST)
+
+# First, recode VOTEPRES and NONVPRES according to the new coding scheme
+lns_subset <- lns_subset %>%
+  mutate(
+    RECODED_VOTEPRES = case_when(
+      VOTEPRES == "(1) George W. Bush" ~ 1,
+      VOTEPRES == "(2) John Kerry" ~ 3,
+      VOTEPRES == "(3) Ralph Nader" ~ 2,
+      VOTEPRES == "(4) Other" ~ 2,
+      TRUE ~ NA_real_
+    ),
+    RECODED_NONVPRES = case_when(
+      NONVPRES == "(1) George W. Bush" ~ 1,
+      NONVPRES == "(2) John Kerry" ~ 3,
+      NONVPRES == "(3) Ralph Nader" ~ 2,
+      NONVPRES == "(4) Other" ~ 2,
+      TRUE ~ NA_real_
+    )
+  )
+
+# Now, combine RECODED_VOTEPRES and RECODED_NONVPRES into VOTE_PREF
+lns_subset <- lns_subset %>%
+  mutate(VOTE_PREF = ifelse(!is.na(RECODED_VOTEPRES), RECODED_VOTEPRES, RECODED_NONVPRES))
+
+# Convert the combined VOTE_PREF variable to numeric
+lns_subset$VOTE_PREF_num <- as.numeric(lns_subset$VOTE_PREF)
+
+# Reverse code DREAMACT and convert to numeric
+lns_subset$DREAMACT_num <- as.numeric(factor(lns_subset$DREAMACT, 
+                                             levels = c("(4) Strongly Support", "(3) Support", 
+                                                        "(2) Oppose", "(1) Strongly Oppose")))
+
+# Reverse code SAYSO and convert to numeric
+lns_subset$SAYSO_num <- as.numeric(factor(lns_subset$SAYSO, 
+                                          levels = c("(4) Strongly agree", "(3) Somewhat agree", 
+                                                     "(2) Somewhat disagree", "(1) Strongly disagree")))
+
+# Checking the first few rows to see if the reverse coded variables are accurate
+head(lns_subset[, c("DREAMACT", "DREAMACT_num", "SAYSO", "SAYSO_num")])
+
+# Convert INCSUPP to numeric
+lns_subset$INCSUPP_num <- as.numeric(factor(lns_subset$INCSUPP, 
+                                            levels = c("(1) Strongly Oppose", "(2) Oppose", 
+                                                       "(3) Support", "(4) Strongly Support")))
+
+# Convert HEALTH to numeric
+lns_subset$HEALTH_num <- as.numeric(factor(lns_subset$HEALTH, 
+                                           levels = c("(1) Strongly Oppose", "(2) Oppose", 
+                                                      "(3) Support", "(4) Strongly Support")))
+
+# Checking the first few rows to see if the numeric variables are accurate
+head(lns_subset[, c("INCSUPP", "INCSUPP_num", "HEALTH", "HEALTH_num")])
+```
+
+## Data Cleaning
+
+### Dropping Unnecessary Variables
+
+```{r}
+# Drop variables that are not of interest
+lns_subset <- lns_subset %>%
+  dplyr::select(CULTURAL_IDENTITY, AMERICAN_num, LEARNENG_num, DISTINCT_num,
+                KEEPSPAN_num, BLEND_num, VOTE_PREF_num, IDEOLOGY_num, FEELPART_num, 
+                PARTYID_num, SAYSO_num, GOVTRUST_num, INCSUPP_num, HEALTH_num, DREAMACT_num, 
+                IMMVIEW_num, IMMPOLICY_num,
+                EDUCATION, NATIONALITY, BIRTH_ORIGIN, GEN_STATUS_num, AGE, SEX, 
+                RACE1, HHINC, RELIGION, WEIGHT)
+```
+
+## Missing Data Handling
+
+### Missing Data Imputation
+
+```{r}
+vars_to_impute <- c("CULTURAL_IDENTITY", "AMERICAN_num", "DISTINCT_num", "BLEND_num", 
+                    "VOTE_PREF_num", "SAYSO_num", "INCSUPP_num", "HEALTH_num", 
+                    "DREAMACT_num", "AGE", "RACE1", "HHINC")
+
+# Perform multiple imputation
+imputed_data <- mice(lns_subset[, vars_to_impute], m = 5, maxit = 20, method = 'pmm', seed = 500)
+```
+
+### Convergence Diagnostics for Imputed Models
+
+```{r}
+# Diagnostic plots to check convergence
+plot(imputed_data)
+
+# Obtain the first imputed dataset
+single_completed_data <- complete(imputed_data, 1)
+
+# Check dimensions to ensure they match
+print(dim(lns_subset))
+print(dim(single_completed_data))
+
+# Replace the missing values in the original dataset
+lns_subset[vars_to_impute] <- single_completed_data[vars_to_impute]
+
+# Checking Convergence for the first imputation model
+convergence_summary_1 <- summary(imputed_data)
+
+# Display the summaries
+print("Convergence Summary for first imputation model:")
+print(convergence_summary_1)
+```
+
+### Robustness Checks
+
+```{r}
+# Perform multiple imputation using a linear model ('norm')
+imputed_data_linear <- mice(lns_subset[, vars_to_impute], m = 5, maxit = 20, method = 'norm', seed = 500)
+
+# Diagnostic plots to check convergence for the linear model imputation
+plot(imputed_data_linear)
+
+# Obtain the first imputed dataset from the linear model imputation
+single_completed_data_linear <- complete(imputed_data_linear, 1)
+
+# Check dimensions to ensure they match
+print(dim(lns_subset))
+print(dim(single_completed_data_linear))
+
+# Compare summary statistics for both imputed datasets
+summary(single_completed_data)
+summary(single_completed_data_linear)
+```
+
+## Outlier Handling
+
+```{r}
+# Define the lower and upper bounds for the AGE variable based on Tukey's method
+lower_bound_age <- -9  # Lower bound for AGE
+upper_bound_age <- 95  # Upper bound for AGE
+
+# Filter the dataset to remove rows with outliers in the AGE variable
+filtered_lns_subset <- lns_subset[lns_subset$AGE >= lower_bound_age & lns_subset$AGE <= upper_bound_age, ]
+
+# Check the dimensions of the filtered dataset to confirm rows were removed
+print(dim(filtered_lns_subset))
+```
+
+## Final Housekeeping
+
+```{r}
+# Convert EDUCATION and HHINC to numeric
+# Define the mapping for EDUCATION
+education_mapping <- c(
+  "(0) None" = 0,
+  "(1) Eighth grade or below" = 1,
+  "(2) Some high school" = 2,
+  "(3) GED" = 3,
+  "(4) High school graduate" = 4,
+  "(5) Some college" = 5,
+  "(6) 4 year college degree" = 6,
+  "(7) Graduate or professional degree" = 7
+)
+
+# Define the mapping for HHINC
+hhinc_mapping <- c(
+  "(1) BELOW $15,000K" = 1,
+  "(2) $15,000-24,999" = 2,
+  "(3) $25,000-34,999" = 3,
+  "(4) $35,000-44,999" = 4,
+  "(5) $45,000-54,999" = 5,
+  "(6) $55,000-64,999" = 6,
+  "(7) ABOVE $65,000" = 7
+)
+
+# Apply the mappings to your variables
+lns_subset$EDUCATION <- education_mapping[lns_subset$EDUCATION]
+lns_subset$HHINC <- hhinc_mapping[lns_subset$HHINC]
+```
+
+## Data Type Conversions
+
+```{r}
+# Convert BIRTH_ORIGIN, SEX, NATIONALITY and RELIGION to factors
+lns_subset <- lns_subset %>%
+  mutate(BIRTH_ORIGIN = as.factor(BIRTH_ORIGIN),
+         SEX = as.factor(SEX),
+         NATIONALITY = as.factor(NATIONALITY))
+
+lns_subset$RELIGION <- as.factor(lns_subset$RELIGION)
+
+# Simplify variable names by removing '_num' suffix
+names(lns_subset) <- gsub("_num", "", names(lns_subset))
+
+```
+
+## Summary Statistics and Checks
+
+### Final Summary Statistics
+
+```{r}
+# Check for missing data in each column
+missing_data_summary <- colSums(is.na(lns_subset))
+
+# Print the summary
+print(missing_data_summary)
+
+str(lns_subset)
+summary(lns_subset)
+
+# Getting dimensions of the final dataset
+final_dimensions <- dim(lns_subset)
+
+# Displaying the number of observations and variables
+print(paste("The final dataset has", final_dimensions[1], "observations and", final_dimensions[2], "variables."))
+
+# Displaying summary statistics for the final dataset
+final_summary_stats <- summary(lns_subset)
+print("Summary Statistics for the final dataset:")
+print(final_summary_stats)
+```
+
+## Save Processed Data
+
+### Save as RDA and CSV
+
+```{r}
+# Save Processed Data
+save(lns_subset, file = "~/Desktop/Dissertation Project/Data/Processed Data/lns_clean.rda")
+```
+
+# End of Script
