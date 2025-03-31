@@ -13,6 +13,13 @@ This repository provides transparent and reproducible access to data, analyses, 
 - Navigate into each folder for relevant scripts, data, and detailed PDF reports.
 - All analyses are performed in R.
 
+## Data Access
+
+The original Latino National Survey (2006) dataset used in this analysis is hosted by ICPSR.  
+Access the data here: [ICPSR Link](https://www.icpsr.umich.edu/web/ICPSR/studies/20862).
+
+Note: Data access may require institutional affiliation or ICPSR account.
+
 ## Contact & Citation:
 - [Jessala A. Grijalva's Email](mailto:jgrijalv@nd.edu)
 - [Jessala A. Grijalva's Website](https://www.jessalagrijalva.com)
