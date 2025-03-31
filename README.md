@@ -10,7 +10,11 @@ This repository provides transparent and reproducible access to data, analyses, 
 - **Presentations:** Conference slides and visuals.
 
 ## How to Use:
-- Navigate into each folder for relevant scripts, data, and detailed PDF reports.
+Each phase folder clearly contains:
+
+- **R Markdown (`.Rmd`) file:** Clearly documented analytical scripts.
+- **Knitted PDF:** Detailed report clearly showing executed code, analyses, and visualizations.
+
 - All analyses are performed in R.
 
 ## Data Access
