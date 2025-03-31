@@ -1,0 +1,353 @@
+---
+title: "Phase 3 Political Analysis"
+author: "Jessala Grijalva"
+date: "`r Sys.Date()`"
+output: html_document
+---
+# Introduction
+
+## Setup and Preliminaries
+
+### Libraries and Seed
+
+```{r}
+# Load necessary libraries
+library(pacman)
+p_load(mclust, cluster, dplyr, tidyverse, dunn.test, rstatix, PMCMRplus, rcompanion, 
+       tidyr, effsize, rlang)
+
+# Set seed for reproducibility
+set.seed(2500)
+```
+
+### Data Loading and Preparation
+
+```{r include=FALSE}
+setwd("~/Desktop/LNS Project/New/")
+
+# Load the dataset from the RDA file
+load("lns_with_clusters_k4.rda")
+
+# Convert the 'cluster_assignment_k4' variable to a factor
+lns_subset$cluster_assignment_k4 <- as.factor(lns_subset$cluster_assignment_k4)
+
+# Count and display the number of observations per cluster category
+category_counts <- table(lns_subset$cluster_assignment_k4)
+print(category_counts)
+
+# Recode the 'cluster_assignment_k4' variable with descriptive labels
+lns_subset$cluster_assignment_k4 <- factor(lns_subset$cluster_assignment_k4,
+                                           levels = c("1", "2", "3", "4"),
+                                           labels = c("Culture_Affirming", "Assimilationist", "Demicultural", "Bicultural"))
+
+# Verify the counts for each label
+table(lns_subset$cluster_assignment_k4)
+
+# Retain only specified variables in lns_subset
+lns_subset <- lns_subset %>%
+  dplyr::select(VOTE_PREF, IDEOLOGY, FEELPART, PARTYID, SAYSO, GOVTRUST, 
+                INCSUPP, HEALTH, DREAMACT, IMMVIEW, IMMPOLICY, EDUCATION, 
+                NATIONALITY, BIRTH_ORIGIN, GEN_STATUS, AGE, SEX, RACE1, HHINC, 
+                RELIGION, WEIGHT, cluster_assignment_k4)
+
+```
+
+## Kruskal-Wallis and Dunn's Test
+
+```{r}
+perform_Kruskal_Dunn_tests <- function(data, iv, dv_list) {
+  results <- list()
+  
+  for (dv in dv_list) {
+    kruskal_result <- rstatix::kruskal_test(reformulate(iv, response = dv), data = data)
+    p_value <- kruskal_result$p[1] # Extract the p-value
+    
+    if (!is.na(p_value) && p_value < 0.05) {
+      # Corrected call to dunn.test() function
+      dunn_result <- dunn.test::dunn.test(x = data[[dv]], g = data[[iv]])
+      
+      # Extract p-values and apply Bonferroni correction
+      p_values <- dunn_result$res$P.adjusted # Assuming the adjusted p-values are what you're interested in
+      adjusted_p <- stats::p.adjust(p_values, method = "bonferroni")
+      
+      # Add adjusted p-values to the dunn_result object for storage
+      dunn_result$adjusted_p <- adjusted_p
+      
+      # Store both Kruskal-Wallis and adjusted Dunn's Test results
+      results[[dv]] <- list(kruskal = kruskal_result, dunn = dunn_result)
+    } else {
+      # Store only Kruskal-Wallis result if not significant
+      results[[dv]] <- list(kruskal = kruskal_result, message = "Not significant, Dunn's Test not performed")
+    }
+  }
+  
+  return(results)
+}
+
+# Execute the function
+dv_list <- c("VOTE_PREF", "IDEOLOGY", "FEELPART", "PARTYID", "SAYSO", "GOVTRUST", "INCSUPP", "HEALTH", "DREAMACT", "IMMVIEW", "IMMPOLICY")
+results <- perform_Kruskal_Dunn_tests(lns_subset, "cluster_assignment_k4", dv_list)
+```
+
+## Mann-Whitney U and effect size calculation (Clifford's Delta)
+
+```{r}
+# Function to manually calculate Clifford's Delta
+# Based on formula: Delta = 2*U / (n1*n2) - 1, where U is the Mann-Whitney U statistic,
+# n1 and n2 are the sample sizes of the two groups.
+calculate_cliffords_delta <- function(U, n1, n2) {
+  delta <- (2*U) / (n1*n2) - 1
+  return(delta)
+}
+
+# Adjusted function to perform Mann-Whitney U Test and calculate Clifford's Delta
+perform_MannWhitney_CliffordsDelta <- function(data, iv, dv, ref_group) {
+  ref_data <- data[data[[iv]] == ref_group, dv]
+  
+  results <- list()
+  
+  for (group in levels(data[[iv]])[-which(levels(data[[iv]]) == ref_group)]) {
+    group_data <- data[data[[iv]] == group, dv]
+    
+    # Perform Mann-Whitney U Test
+    mw_test <- wilcox.test(ref_data, group_data)
+    
+    # Extract U statistic and calculate sample sizes
+    U <- mw_test$statistic
+    n1 <- length(ref_data)
+    n2 <- length(group_data)
+    
+    # Calculate Clifford's Delta
+    delta <- calculate_cliffords_delta(U, n1, n2)
+    
+    # Store results
+    results[[group]] <- list(
+      mann_whitney = mw_test,
+      clifford_delta = delta
+    )
+  }
+  
+  return(results)
+}
+
+# Execute the adjusted function for each dependent variable
+results_MW_CliffordsDelta <- list()
+
+for (dv in dv_list) {
+  mw_delta_results <- perform_MannWhitney_CliffordsDelta(lns_subset, "cluster_assignment_k4", dv, ref_group = "Culture_Affirming")
+  results_MW_CliffordsDelta[[dv]] <- mw_delta_results
+}
+
+# Print or view the adjusted results
+print(results_MW_CliffordsDelta)
+```
+
+```{r}
+# Function to bootstrap Kruskal-Wallis test
+bootstrap_kruskal <- function(data, iv, dv, n_boot = 1000) {
+  boot_results <- numeric(n_boot)
+  
+  for (i in 1:n_boot) {
+    # Resample data with replacement
+    boot_sample <- data[sample(1:nrow(data), replace = TRUE), ]
+    
+    # Perform Kruskal-Wallis test
+    kw_test <- rstatix::kruskal_test(reformulate(iv, response = dv), data = boot_sample)
+    boot_results[i] <- kw_test$p[1] # Store p-value
+  }
+  
+  return(boot_results)
+}
+
+# Example usage for PARTYID
+kruskal_bootstrap_results <- bootstrap_kruskal(lns_subset, "cluster_assignment_k4", "PARTYID", n_boot = 1000)
+
+# Calculate summary statistics for bootstrapped p-values
+summary(kruskal_bootstrap_results)
+hist(kruskal_bootstrap_results, main = "Bootstrapped Kruskal-Wallis p-values", xlab = "p-value", breaks = 20)
+```
+
+```{r}
+# Function to bootstrap Dunn's Test for pairwise comparisons
+bootstrap_dunn <- function(data, iv, dv, n_boot = 1000) {
+  pairwise_results <- list()
+  
+  # Extract unique levels of the independent variable
+  levels_iv <- levels(data[[iv]])
+  
+  # Initialize storage for bootstrap results
+  for (i in 1:(length(levels_iv) - 1)) {
+    for (j in (i + 1):length(levels_iv)) {
+      pair_name <- paste(levels_iv[i], "vs", levels_iv[j])
+      pairwise_results[[pair_name]] <- numeric(n_boot)
+    }
+  }
+  
+  # Perform bootstrapping
+  for (b in 1:n_boot) {
+    # Resample data
+    boot_sample <- data[sample(1:nrow(data), replace = TRUE), ]
+    
+    # Perform Dunn's Test
+    dunn_result <- dunn.test::dunn.test(x = boot_sample[[dv]], g = boot_sample[[iv]], method = "bonferroni")
+    
+    # Store p-values for each pair
+    for (k in seq_len(nrow(dunn_result$res))) {
+      pair_name <- paste(dunn_result$res$Group1[k], "vs", dunn_result$res$Group2[k])
+      pairwise_results[[pair_name]][b] <- dunn_result$res$P.adjusted[k]
+    }
+  }
+  
+  # Return results
+  return(pairwise_results)
+}
+
+# Example usage for PARTYID
+dunn_bootstrap_results <- bootstrap_dunn(lns_subset, "cluster_assignment_k4", "PARTYID", n_boot = 1000)
+
+# Summarize bootstrapped results
+for (pair in names(dunn_bootstrap_results)) {
+  cat("\n---", pair, "---\n")
+  boot_p_values <- dunn_bootstrap_results[[pair]]
+  summary(boot_p_values)
+  hist(boot_p_values, main = paste("Bootstrap P-Values for", pair), xlab = "p-value", breaks = 20)
+}
+```
+
+```{r}
+# Function to bootstrap Clifford's Delta
+bootstrap_clifford <- function(data, iv, dv, ref_group, n_boot = 1000) {
+  delta_results <- list()
+  
+  # Extract reference group data
+  ref_data <- data[data[[iv]] == ref_group, dv]
+  
+  # Perform bootstrapping
+  for (group in levels(data[[iv]])[-which(levels(data[[iv]]) == ref_group)]) {
+    group_deltas <- numeric(n_boot)
+    for (b in 1:n_boot) {
+      # Resample data
+      ref_sample <- sample(ref_data, replace = TRUE)
+      group_sample <- sample(data[data[[iv]] == group, dv], replace = TRUE)
+      
+      # Perform Mann-Whitney U Test
+      mw_test <- wilcox.test(ref_sample, group_sample)
+      U <- mw_test$statistic
+      
+      # Calculate Clifford's Delta
+      delta <- calculate_cliffords_delta(U, length(ref_sample), length(group_sample))
+      group_deltas[b] <- delta
+    }
+    
+    # Store results for each comparison
+    delta_results[[group]] <- group_deltas
+  }
+  
+  return(delta_results)
+}
+
+# Example usage for PARTYID
+clifford_bootstrap_results <- bootstrap_clifford(lns_subset, "cluster_assignment_k4", "PARTYID", ref_group = "Culture_Affirming", n_boot = 1000)
+
+# Summarize bootstrapped Clifford's Delta results
+for (group in names(clifford_bootstrap_results)) {
+  cat("\n--- Clifford's Delta for", group, "---\n")
+  delta_values <- clifford_bootstrap_results[[group]]
+  summary(delta_values)
+  hist(delta_values, main = paste("Bootstrap Clifford's Delta for", group), xlab = "Delta", breaks = 20)
+}
+```
+ 
+```{r}
+# Calculate mean PARTYID values for each cluster
+partyid_means <- lns_subset %>%
+  group_by(cluster_assignment_k4) %>%
+  summarise(mean_partyid = mean(PARTYID, na.rm = TRUE))
+
+# Create bar chart
+ggplot(partyid_means, aes(x = cluster_assignment_k4, y = mean_partyid, fill = cluster_assignment_k4)) +
+  geom_bar(stat = "identity", color = "black", width = 0.7) +
+  labs(
+    title = "Mean PARTYID by Acculturation Orientation",
+    x = "Cluster (Orientation)",
+    y = "Mean PARTYID",
+    fill = "Cluster"
+  ) +
+  theme_minimal(base_size = 14) +
+  scale_fill_manual(values = c(
+    "Bicultural" = "#003f5c",        # Dark Blue
+    "Demicultural" = "#7a5195",     # Purple
+    "Assimilationist" = "#ef5675",  # Red
+    "Culture_Affirming" = "#ffa600" # Yellow
+  )) +
+  geom_text(aes(label = round(mean_partyid, 2)), vjust = -0.5, size = 5, color = "black") +
+  theme(
+    plot.title = element_text(size = 16, hjust = 0.5),
+    legend.position = "none"
+  )
+
+```
+
+```{r}
+# Improved density plot with discrete lines
+ggplot(lns_subset, aes(x = PARTYID, color = cluster_assignment_k4)) +
+  geom_density(size = 1.2) +
+  labs(
+    title = "Density Plot: PARTYID Scores by Cluster",
+    x = "PARTYID Score",
+    y = "Density",
+    color = "Cluster"
+  ) +
+  theme_minimal(base_size = 14) +
+  scale_color_manual(values = c(
+    "Bicultural" = "#003f5c",        # Dark Blue
+    "Demicultural" = "#7a5195",     # Purple
+    "Assimilationist" = "#ef5675",  # Red
+    "Culture_Affirming" = "#ffa600" # Yellow
+  )) +
+  theme(
+    plot.title = element_text(size = 16, hjust = 0.5),
+    legend.text = element_text(size = 12),
+    legend.title = element_text(size = 14)
+  )
+```
+
+```{r}
+# Calculate mean, confidence intervals, and significance
+partyid_stats <- lns_subset %>%
+  group_by(cluster_assignment_k4) %>%
+  summarise(
+    mean_partyid = mean(PARTYID, na.rm = TRUE),
+    ci_lower = mean_partyid - 1.96 * sd(PARTYID, na.rm = TRUE) / sqrt(n()),
+    ci_upper = mean_partyid + 1.96 * sd(PARTYID, na.rm = TRUE) / sqrt(n()),
+    significance = c("***", "**", "*", "") # Example for illustration, replace with actual significance levels
+  )
+
+# Improved bar chart with error bars and asterisks
+ggplot(partyid_stats, aes(x = cluster_assignment_k4, y = mean_partyid, fill = cluster_assignment_k4)) +
+  geom_bar(stat = "identity", color = "black", width = 0.7) +
+  geom_errorbar(aes(ymin = ci_lower, ymax = ci_upper), width = 0.2, color = "black") +
+  geom_text(aes(label = significance), vjust = -1.5, size = 6, color = "black") +
+  labs(
+    title = "Mean PARTYID by Acculturation Orientation (with Robustness)",
+    x = "Cluster (Orientation)",
+    y = "Mean PARTYID",
+    fill = "Cluster"
+  ) +
+  theme_minimal(base_size = 14) +
+  scale_fill_manual(values = c(
+    "Bicultural" = "#003f5c",        # Dark Blue
+    "Demicultural" = "#7a5195",     # Purple
+    "Assimilationist" = "#ef5675",  # Red
+    "Culture_Affirming" = "#ffa600" # Yellow
+  )) +
+  theme(
+    plot.title = element_text(size = 16, hjust = 0.5),
+    legend.position = "none"
+  )
+```
+
+
+
+
+# End of Script
