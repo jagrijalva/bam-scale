@@ -1,0 +1,241 @@
+---
+title: "BAM Phase 1: Preprocessing Documentation"
+subtitle: "LNS 2006 Data Preparation for GMM Clustering"
+author: "Jessala A. Grijalva"
+date: "September 2023"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: false
+    embed-resources: true
+execute:
+  eval: false
+  warning: false
+  message: false
+---
+
+## Overview
+
+This document describes the preprocessing steps applied to the Latino National Survey (LNS) 2006 dataset to prepare it for Gaussian Mixture Model (GMM) clustering analysis. The goal is to derive the Bicultural Acculturation Measure (BAM) orientations.
+
+::: {.callout-important}
+## Reproducibility Note
+This script is provided for **documentation purposes only**. The multiple imputation step (MICE) produces stochastic results that vary across R versions and platforms. The canonical preprocessed dataset is preserved in `lns_with_clusters_k4.rda` and should be used for all downstream analyses.
+:::
+
+## Setup
+
+```{r setup}
+library(pacman)
+p_load(dplyr, tidyr, mice, forcats, skimr, stringr, readr)
+
+set.seed(500)  # Imputation seed
+```
+
+## Step 1: Load Raw Data
+
+Data source: ICPSR Study 20862 - Latino National Survey, 2006
+
+```{r load-data}
+load("data/raw/20862-0003-Data.rda")
+```
+
+## Step 2: Initial Subsetting
+
+Select US-born or naturalized Latino respondents and relevant variables.
+
+```{r subset}
+lns_subset <- da20862.0003 %>%
+  dplyr::filter(BORNUS %in% c("(1) Mainland US", "(2) Puerto Rico") | 
+                NATUSCIT == "(1) YES") %>%
+  dplyr::select(
+    AGE, SEX, REDUC, HHINC, RELIGION, ANCESTRY, BORNUS, NATUSCIT, BIRTHPLC,
+    PARBORN, GRANBORN, AMERICAN, RGIDENT, LAIDENT, KEEPSPAN, LEARNENG,
+    BLEND, DISTINCT, IMMPOLICY, DREAMACT, IMMVIEW, IDEOLOGY, RACE1,
+    FEELPART, PARTYID, PRIMEID, VOTEPRES, NONVPRES, SAYSO, GOVTRUST,
+    INCSUPP, HEALTH, WT_NATION_REV
+  ) %>%
+  dplyr::rename(WEIGHT = WT_NATION_REV)
+```
+
+## Step 3: Feature Engineering
+
+### Generational Status
+
+```{r gen-status}
+lns_subset <- lns_subset %>%
+  mutate(
+    GEN_STATUS = case_when(
+      BORNUS == "(3) Some other country" ~ "First Generation",
+      BORNUS %in% c("(1) Mainland US", "(2) Puerto Rico") & 
+        PARBORN != "(2) Both parents born in the U.S." ~ "Second Generation",
+      BORNUS %in% c("(1) Mainland US", "(2) Puerto Rico") & 
+        PARBORN == "(2) Both parents born in the U.S." ~ "Third Generation Plus",
+      TRUE ~ "Other"
+    )
+  ) %>%
+  filter(GEN_STATUS != "Other")
+
+lns_subset$GEN_STATUS_num <- as.numeric(case_when(
+  lns_subset$GEN_STATUS == "First Generation" ~ 1,
+  lns_subset$GEN_STATUS == "Second Generation" ~ 2,
+  lns_subset$GEN_STATUS == "Third Generation Plus" ~ 3,
+  TRUE ~ NA_real_
+))
+```
+
+### Clustering Variables (VARS5)
+
+These five variables form the basis for GMM clustering:
+
+```{r vars5}
+# AMERICAN: Strength of American identity (1-4)
+lns_subset$AMERICAN_num <- as.numeric(factor(lns_subset$AMERICAN,
+  levels = c("(1) Not at all", "(2) Not very strongly", 
+             "(3) Somewhat strongly", "(4) Very strongly")))
+
+# LEARNENG: Importance of learning English (1-4)
+lns_subset$LEARNENG_num <- as.numeric(factor(lns_subset$LEARNENG,
+  levels = c("(1) Not at all important", "(2) Not very important",
+             "(3) Somewhat important", "(4) Very Important")))
+
+# CULTURAL_IDENTITY: Mean of regional + Latino identity (1-4)
+lns_subset$RGIDENT_num <- as.numeric(factor(lns_subset$RGIDENT,
+  levels = c("(1) Not at all", "(2) Not very strongly",
+             "(3) Somewhat strongly", "(4) Very strongly")))
+lns_subset$LAIDENT_num <- as.numeric(factor(lns_subset$LAIDENT,
+  levels = c("(1) Not at all", "(2) Not very strongly",
+             "(3) Somewhat strongly", "(4) Very strongly")))
+lns_subset$CULTURAL_IDENTITY <- rowMeans(
+  cbind(lns_subset$RGIDENT_num, lns_subset$LAIDENT_num), na.rm = TRUE)
+
+# DISTINCT: Importance of maintaining distinct culture (1-3)
+lns_subset$DISTINCT_num <- as.numeric(lns_subset$DISTINCT)
+
+# KEEPSPAN: Importance of keeping Spanish (1-4)
+lns_subset$KEEPSPAN_num <- as.numeric(lns_subset$KEEPSPAN)
+```
+
+### Political and Outcome Variables
+
+```{r political-vars}
+# IDEOLOGY (recoded: 1=Conservative, 2=Moderate/DK, 3=Liberal)
+lns_subset <- lns_subset %>%
+  mutate(IDEOLOGY = case_when(
+    IDEOLOGY == "(1) Conservative" ~ 1,
+    IDEOLOGY == "(2) Liberal" ~ 3,
+    TRUE ~ 2  # Middle, Don't know, Don't think in these terms
+  ))
+
+# PARTYID (recoded: 1=Republican, 2=Independent/Other, 3=Democrat)
+lns_subset <- lns_subset %>%
+  mutate(PARTYID = case_when(
+    PARTYID == "(2) Republican" ~ 1,
+    PARTYID == "(1) Democrat" ~ 3,
+    TRUE ~ 2
+  ))
+
+# IMMVIEW (reverse coded: 1=burden, 2=strengthen)
+lns_subset <- lns_subset %>%
+  mutate(IMMVIEW = case_when(
+    grepl("strengthen", IMMVIEW) ~ 2,
+    grepl("burden", IMMVIEW) ~ 1,
+    TRUE ~ NA_real_
+  ))
+
+# DREAMACT (reverse coded: 1=Strongly Support → 4=Strongly Oppose)
+lns_subset$DREAMACT_num <- as.numeric(factor(lns_subset$DREAMACT,
+  levels = c("(4) Strongly Support", "(3) Support",
+             "(2) Oppose", "(1) Strongly Oppose")))
+
+# IMMPOLICY (5-point scale)
+lns_subset <- lns_subset %>%
+  mutate(IMMPOLICY = case_when(
+    grepl("Immediate legalization", IMMPOLICY) ~ 5,
+    grepl("guest worker.*legalization eventually", IMMPOLICY) ~ 4,
+    grepl("None of these", IMMPOLICY) ~ 3,
+    grepl("guest worker.*permits", IMMPOLICY) ~ 2,
+    grepl("seal or close", IMMPOLICY) ~ 1,
+    TRUE ~ NA_real_
+  ))
+```
+
+## Step 4: Multiple Imputation (MICE)
+
+::: {.callout-warning}
+## Stochastic Process
+MICE (Multivariate Imputation by Chained Equations) uses Predictive Mean Matching (PMM), which involves random sampling from donor pools. Results vary across R versions and platforms even with identical seeds.
+:::
+
+```{r mice}
+vars_to_impute <- c("CULTURAL_IDENTITY", "AMERICAN_num", "DISTINCT_num", "BLEND_num",
+                    "VOTE_PREF_num", "SAYSO_num", "INCSUPP_num", "HEALTH_num",
+                    "DREAMACT_num", "AGE", "RACE1", "HHINC")
+
+imputed_data <- mice(
+  lns_subset[, vars_to_impute], 
+  m = 5,           # 5 imputed datasets
+  maxit = 20,      # 20 iterations
+  method = 'pmm',  # Predictive Mean Matching
+  seed = 500       # Reproducibility seed (platform-dependent)
+)
+
+# Use first imputed dataset
+single_completed_data <- complete(imputed_data, 1)
+lns_subset[vars_to_impute] <- single_completed_data[vars_to_impute]
+```
+
+## Step 5: Final Cleaning
+
+```{r final-clean}
+# Select final variables
+lns_subset <- lns_subset %>%
+  dplyr::select(
+    CULTURAL_IDENTITY, AMERICAN_num, LEARNENG_num, DISTINCT_num,
+    KEEPSPAN_num, BLEND_num, VOTE_PREF_num, IDEOLOGY_num, FEELPART_num,
+    PARTYID_num, SAYSO_num, GOVTRUST_num, INCSUPP_num, HEALTH_num, 
+    DREAMACT_num, IMMVIEW_num, IMMPOLICY_num,
+    EDUCATION, NATIONALITY, BIRTH_ORIGIN, GEN_STATUS_num, AGE, SEX,
+    RACE1, HHINC, RELIGION, WEIGHT
+  )
+
+# Remove _num suffix from variable names
+names(lns_subset) <- gsub("_num", "", names(lns_subset))
+```
+
+## Step 6: Save Preprocessed Data
+
+```{r save}
+save(lns_subset, file = "data/processed/lns_clean.rda")
+```
+
+## Output Summary
+
+| Attribute | Value |
+|-----------|-------|
+| Observations | 4,785 |
+| Variables | 27 |
+| Missing values | 0 (after imputation) |
+
+### Clustering Variables (VARS5)
+
+| Variable | Description | Range |
+|----------|-------------|-------|
+| AMERICAN | Strength of American identity | 1-4 |
+| CULTURAL_IDENTITY | Mean of regional + Latino identity | 1-4 |
+| KEEPSPAN | Importance of keeping Spanish | 1-4 |
+| DISTINCT | Importance of maintaining distinct culture | 1-3 |
+| LEARNENG | Importance of learning English | 1-4 |
+
+---
+
+## Session Info (Original Analysis)
+
+The original preprocessing was conducted in **September 2023** with:
+
+- R version ~4.1.x  
+- mice package version at that time
+- Platform: macOS
+
+*For reproducible results, use the preserved `lns_with_clusters_k4.rda` file.*
