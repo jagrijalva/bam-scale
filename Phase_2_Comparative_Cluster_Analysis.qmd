@@ -1,0 +1,517 @@
+---
+title: "Phase 2 - Comparative Cluster Analysis"
+author: "Jessala A. Grijalva"
+format: pdf
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+## Setup
+
+```{r}
+#| label: setup
+#| message: false
+#| warning: false
+
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load(tidyverse, mclust, cluster, factoextra, e1071, dbscan, fpc)
+
+set.seed(2500)
+```
+
+## Load Data
+
+```{r}
+#| label: load-data
+
+load("data/processed/clean_data.rda")
+
+cat("Dataset dimensions:", dim(lns_subset)[1], "rows,", dim(lns_subset)[2], "columns\n")
+```
+
+## Build Clustering Matrix
+
+```{r}
+#| label: clustering-matrix
+
+VARS5 <- c("AMERICAN", "CULTURAL_IDENTITY", "KEEPSPAN", "DISTINCT", "LEARNENG")
+
+clust_data <- lns_subset %>%
+  select(all_of(VARS5)) %>%
+  drop_na() %>%
+  scale() %>%
+  as.data.frame()
+
+clust_matrix <- as.matrix(clust_data)
+
+cat("Rows used (complete on VARS5):", nrow(clust_matrix), "\n")
+cat("Variables:", paste(VARS5, collapse = ", "), "\n")
+```
+
+## Step 1: K-Means Clustering
+
+```{r}
+#| label: kmeans-analysis
+
+k_range <- 2:5
+
+km_wcss <- numeric(length(k_range))
+km_sil <- numeric(length(k_range))
+km_ch <- numeric(length(k_range))
+km_sizes <- list()
+km_models <- list()
+
+for (i in seq_along(k_range)) {
+  k <- k_range[i]
+  set.seed(2500)
+  km <- kmeans(clust_matrix, centers = k, nstart = 25)
+  
+  km_wcss[i] <- km$tot.withinss
+  km_sil[i] <- mean(silhouette(km$cluster, dist(clust_matrix))[, 3])
+  km_ch[i] <- calinhara(clust_matrix, km$cluster)
+  km_sizes[[i]] <- km$size
+  km_models[[i]] <- km
+}
+
+kmeans_metrics <- tibble(
+  k = k_range,
+  WCSS = round(km_wcss, 2),
+  Silhouette = round(km_sil, 4),
+  Calinski_Harabasz = round(km_ch, 2)
+)
+
+knitr::kable(kmeans_metrics, caption = "K-Means Performance Metrics")
+```
+
+### Elbow Plot
+
+```{r}
+#| label: kmeans-elbow-plot
+
+ggplot(kmeans_metrics, aes(x = k, y = WCSS)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 3) +
+  scale_x_continuous(breaks = k_range) +
+  labs(title = "K-Means: Elbow Plot", 
+       x = "Number of Clusters (k)", 
+       y = "Within-Cluster Sum of Squares") +
+  theme_minimal()
+```
+
+### K-Means Cluster Sizes
+
+```{r}
+#| label: kmeans-sizes
+
+for (i in seq_along(k_range)) {
+  cat("k =", k_range[i], ":", km_sizes[[i]], "\n")
+}
+```
+
+## Step 2: Gaussian Mixture Model (GMM)
+
+```{r}
+#| label: gmm-analysis
+
+gmm_bic <- numeric(length(k_range))
+gmm_sil <- numeric(length(k_range))
+gmm_ch <- numeric(length(k_range))
+gmm_loglik <- numeric(length(k_range))
+gmm_sizes <- list()
+gmm_models <- list()
+
+for (i in seq_along(k_range)) {
+  k <- k_range[i]
+  set.seed(2500)
+  gm <- Mclust(clust_matrix, G = k, modelNames = "EEV")
+  
+  gmm_bic[i] <- gm$bic
+  gmm_loglik[i] <- gm$loglik
+  gmm_sil[i] <- mean(silhouette(gm$classification, dist(clust_matrix))[, 3])
+  gmm_ch[i] <- calinhara(clust_matrix, gm$classification)
+  gmm_sizes[[i]] <- as.vector(table(gm$classification))
+  gmm_models[[i]] <- gm
+}
+
+gmm_metrics <- tibble(
+  k = k_range,
+  BIC = round(gmm_bic, 2),
+  LogLik = round(gmm_loglik, 2),
+  Silhouette = round(gmm_sil, 4),
+  Calinski_Harabasz = round(gmm_ch, 2)
+)
+
+knitr::kable(gmm_metrics, caption = "GMM (EEV) Performance Metrics")
+```
+
+### GMM Cluster Sizes
+
+```{r}
+#| label: gmm-sizes
+
+for (i in seq_along(k_range)) {
+  cat("k =", k_range[i], ":", gmm_sizes[[i]], "\n")
+}
+```
+
+### GMM k=4 Detail
+
+```{r}
+#| label: gmm-k4-detail
+
+gmm_k4 <- gmm_models[[3]]
+summary(gmm_k4)
+```
+
+## Step 3: Fuzzy C-Means
+
+```{r}
+#| label: fcm-analysis
+
+fcm_sil <- numeric(length(k_range))
+fcm_ch <- numeric(length(k_range))
+fcm_fpc <- numeric(length(k_range))
+fcm_sizes <- list()
+fcm_models <- list()
+
+for (i in seq_along(k_range)) {
+  k <- k_range[i]
+  set.seed(2500)
+  fc <- cmeans(clust_matrix, centers = k, m = 2, iter.max = 100)
+  
+  hard_clusters <- fc$cluster
+  fcm_sil[i] <- mean(silhouette(hard_clusters, dist(clust_matrix))[, 3])
+  fcm_ch[i] <- calinhara(clust_matrix, hard_clusters)
+  fcm_fpc[i] <- sum(fc$membership^2) / nrow(clust_matrix)
+  fcm_sizes[[i]] <- as.vector(table(hard_clusters))
+  fcm_models[[i]] <- fc
+}
+
+fcm_metrics <- tibble(
+  k = k_range,
+  Silhouette = round(fcm_sil, 4),
+  Calinski_Harabasz = round(fcm_ch, 2),
+  FPC = round(fcm_fpc, 4)
+)
+
+knitr::kable(fcm_metrics, caption = "Fuzzy C-Means Performance Metrics")
+```
+
+### Fuzzy C-Means Cluster Sizes
+
+```{r}
+#| label: fcm-sizes
+
+for (i in seq_along(k_range)) {
+  cat("k =", k_range[i], ":", fcm_sizes[[i]], "\n")
+}
+```
+
+## Step 4: Hierarchical Clustering
+
+```{r}
+#| label: hclust-analysis
+
+dist_matrix <- dist(clust_matrix, method = "euclidean")
+
+set.seed(2500)
+hc <- hclust(dist_matrix, method = "ward.D2")
+
+hc_sil <- numeric(length(k_range))
+hc_ch <- numeric(length(k_range))
+hc_sizes <- list()
+hc_clusters <- list()
+
+for (i in seq_along(k_range)) {
+  k <- k_range[i]
+  clusters <- cutree(hc, k = k)
+  
+  hc_sil[i] <- mean(silhouette(clusters, dist_matrix)[, 3])
+  hc_ch[i] <- calinhara(clust_matrix, clusters)
+  hc_sizes[[i]] <- as.vector(table(clusters))
+  hc_clusters[[i]] <- clusters
+}
+
+hc_metrics <- tibble(
+  k = k_range,
+  Silhouette = round(hc_sil, 4),
+  Calinski_Harabasz = round(hc_ch, 2)
+)
+
+knitr::kable(hc_metrics, caption = "Hierarchical Clustering Performance Metrics")
+```
+
+### Hierarchical Cluster Sizes
+
+```{r}
+#| label: hclust-sizes
+
+for (i in seq_along(k_range)) {
+  cat("k =", k_range[i], ":", hc_sizes[[i]], "\n")
+}
+```
+
+## Step 5: DBSCAN
+
+```{r}
+#| label: dbscan-eps
+#| fig-height: 4
+
+kNNdistplot(clust_matrix, k = 5)
+abline(h = 1.5, col = "red", lty = 2)
+title(main = "k-NN Distance Plot for DBSCAN eps Selection")
+```
+
+```{r}
+#| label: dbscan-analysis
+
+eps_range <- c(1.0, 1.25, 1.5, 1.75, 2.0)
+minPts <- 5
+
+db_n_clusters <- numeric(length(eps_range))
+db_n_noise <- numeric(length(eps_range))
+db_pct_noise <- numeric(length(eps_range))
+db_sil <- numeric(length(eps_range))
+
+for (i in seq_along(eps_range)) {
+  eps <- eps_range[i]
+  set.seed(2500)
+  db <- dbscan::dbscan(clust_matrix, eps = eps, minPts = minPts)
+  
+  db_n_clusters[i] <- length(unique(db$cluster[db$cluster > 0]))
+  db_n_noise[i] <- sum(db$cluster == 0)
+  db_pct_noise[i] <- round(db_n_noise[i] / nrow(clust_matrix) * 100, 1)
+  
+  if (db_n_clusters[i] >= 2 && db_n_noise[i] < nrow(clust_matrix)) {
+    non_noise <- db$cluster > 0
+    db_sil[i] <- mean(silhouette(db$cluster[non_noise], 
+                                  dist(clust_matrix[non_noise, ]))[, 3])
+  } else {
+    db_sil[i] <- NA
+  }
+}
+
+dbscan_metrics <- tibble(
+  eps = eps_range,
+  Clusters = db_n_clusters,
+  Noise = db_n_noise,
+  Pct_Noise = db_pct_noise,
+  Silhouette = round(db_sil, 4)
+)
+
+knitr::kable(dbscan_metrics, caption = "DBSCAN Results by eps (minPts = 5)")
+```
+
+## Comparative Performance Tables
+
+### Silhouette Scores by Method and k
+
+```{r}
+#| label: comparison-silhouette
+
+sil_comparison <- tibble(
+  Method = c("K-Means", "GMM (EEV)", "Fuzzy C-Means", "Hierarchical"),
+  `k=2` = round(c(km_sil[1], gmm_sil[1], fcm_sil[1], hc_sil[1]), 4),
+  `k=3` = round(c(km_sil[2], gmm_sil[2], fcm_sil[2], hc_sil[2]), 4),
+  `k=4` = round(c(km_sil[3], gmm_sil[3], fcm_sil[3], hc_sil[3]), 4),
+  `k=5` = round(c(km_sil[4], gmm_sil[4], fcm_sil[4], hc_sil[4]), 4)
+)
+
+knitr::kable(sil_comparison, caption = "Silhouette Scores by Method and k")
+```
+
+### Calinski-Harabasz Index by Method and k
+
+```{r}
+#| label: comparison-ch
+
+ch_comparison <- tibble(
+  Method = c("K-Means", "GMM (EEV)", "Fuzzy C-Means", "Hierarchical"),
+  `k=2` = round(c(km_ch[1], gmm_ch[1], fcm_ch[1], hc_ch[1]), 2),
+  `k=3` = round(c(km_ch[2], gmm_ch[2], fcm_ch[2], hc_ch[2]), 2),
+  `k=4` = round(c(km_ch[3], gmm_ch[3], fcm_ch[3], hc_ch[3]), 2),
+  `k=5` = round(c(km_ch[4], gmm_ch[4], fcm_ch[4], hc_ch[4]), 2)
+)
+
+knitr::kable(ch_comparison, caption = "Calinski-Harabasz Index by Method and k (higher = better)")
+```
+
+### k=4 Solution: Cluster Sizes
+
+```{r}
+#| label: comparison-sizes-k4
+
+sizes_k4 <- tibble(
+  Method = c("K-Means", "GMM (EEV)", "Fuzzy C-Means", "Hierarchical"),
+  Silhouette = round(c(km_sil[3], gmm_sil[3], fcm_sil[3], hc_sil[3]), 4),
+  CH_Index = round(c(km_ch[3], gmm_ch[3], fcm_ch[3], hc_ch[3]), 2),
+  C1 = c(km_sizes[[3]][1], gmm_sizes[[3]][1], fcm_sizes[[3]][1], hc_sizes[[3]][1]),
+  C2 = c(km_sizes[[3]][2], gmm_sizes[[3]][2], fcm_sizes[[3]][2], hc_sizes[[3]][2]),
+  C3 = c(km_sizes[[3]][3], gmm_sizes[[3]][3], fcm_sizes[[3]][3], hc_sizes[[3]][3]),
+  C4 = c(km_sizes[[3]][4], gmm_sizes[[3]][4], fcm_sizes[[3]][4], hc_sizes[[3]][4])
+)
+
+knitr::kable(sizes_k4, caption = "k=4 Solution: Performance and Cluster Sizes")
+```
+
+## Performance Visualization
+
+```{r}
+#| label: silhouette-comparison-plot
+#| fig-height: 5
+
+sil_long <- tibble(
+  k = rep(k_range, 4),
+  Method = rep(c("K-Means", "GMM (EEV)", "Fuzzy C-Means", "Hierarchical"), 
+               each = length(k_range)),
+  Silhouette = c(km_sil, gmm_sil, fcm_sil, hc_sil)
+)
+
+ggplot(sil_long, aes(x = k, y = Silhouette, color = Method, shape = Method)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 3) +
+  scale_x_continuous(breaks = k_range) +
+  labs(title = "Silhouette Score Comparison Across Methods",
+       x = "Number of Clusters (k)", 
+       y = "Silhouette Score") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+## Detailed Comparison: K-Means, GMM, Hierarchical (k=4)
+
+### Performance Summary
+
+```{r}
+#| label: detailed-k4-comparison
+
+detailed_k4 <- tibble(
+  Method = c("K-Means", "GMM (EEV)", "Hierarchical"),
+  Silhouette = round(c(km_sil[3], gmm_sil[3], hc_sil[3]), 4),
+  Calinski_Harabasz = round(c(km_ch[3], gmm_ch[3], hc_ch[3]), 2),
+  C1 = c(km_sizes[[3]][1], gmm_sizes[[3]][1], hc_sizes[[3]][1]),
+  C2 = c(km_sizes[[3]][2], gmm_sizes[[3]][2], hc_sizes[[3]][2]),
+  C3 = c(km_sizes[[3]][3], gmm_sizes[[3]][3], hc_sizes[[3]][3]),
+  C4 = c(km_sizes[[3]][4], gmm_sizes[[3]][4], hc_sizes[[3]][4])
+)
+
+knitr::kable(detailed_k4, caption = "K-Means vs GMM vs Hierarchical at k=4")
+```
+
+### Cluster Means (Standardized Variables)
+
+```{r}
+#| label: kmeans-means
+
+km_means <- aggregate(clust_matrix, 
+                      by = list(Cluster = km_models[[3]]$cluster), 
+                      FUN = mean) %>%
+  mutate(across(where(is.numeric), ~round(., 3)))
+
+knitr::kable(km_means, caption = "K-Means Cluster Means (k=4)")
+```
+
+```{r}
+#| label: gmm-means
+
+gmm_means <- aggregate(clust_matrix, 
+                       by = list(Cluster = gmm_models[[3]]$classification), 
+                       FUN = mean) %>%
+  mutate(across(where(is.numeric), ~round(., 3)))
+
+knitr::kable(gmm_means, caption = "GMM (EEV) Cluster Means (k=4)")
+```
+
+```{r}
+#| label: hc-means
+
+hc_means <- aggregate(clust_matrix, 
+                      by = list(Cluster = hc_clusters[[3]]), 
+                      FUN = mean) %>%
+  mutate(across(where(is.numeric), ~round(., 3)))
+
+knitr::kable(hc_means, caption = "Hierarchical Cluster Means (k=4)")
+```
+
+### Cluster Means Heatmap
+
+```{r}
+#| label: means-heatmap
+#| fig-height: 7
+
+km_means_long <- km_means %>%
+  pivot_longer(cols = all_of(VARS5), names_to = "Variable", values_to = "Mean") %>%
+  mutate(Method = "K-Means", Label = paste0("KM-C", Cluster))
+
+gmm_means_long <- gmm_means %>%
+  pivot_longer(cols = all_of(VARS5), names_to = "Variable", values_to = "Mean") %>%
+  mutate(Method = "GMM", Label = paste0("GMM-C", Cluster))
+
+hc_means_long <- hc_means %>%
+  pivot_longer(cols = all_of(VARS5), names_to = "Variable", values_to = "Mean") %>%
+  mutate(Method = "HC", Label = paste0("HC-C", Cluster))
+
+all_means_long <- bind_rows(km_means_long, gmm_means_long, hc_means_long)
+
+ggplot(all_means_long, aes(x = Variable, y = Label, fill = Mean)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = round(Mean, 2)), size = 3) +
+  scale_fill_gradient2(low = "steelblue", mid = "white", high = "firebrick", 
+                       midpoint = 0, limits = c(-1.5, 1.5)) +
+  labs(title = "Cluster Means Comparison (k=4)",
+       subtitle = "KM = K-Means, GMM = Gaussian Mixture Model, HC = Hierarchical",
+       x = "Variable (Standardized)", 
+       y = "") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+## Summary
+
+```{r}
+#| label: summary
+
+cat("=== COMPARATIVE CLUSTER ANALYSIS SUMMARY ===\n\n")
+
+cat("1. GMM (EEV) k=4 REPLICATION:\n")
+cat("   Cluster sizes:", gmm_sizes[[3]], "\n")
+cat("   Expected:      433 705 378 3269\n\n")
+
+cat("2. SILHOUETTE RANKING at k=4:\n")
+k4_sil_rank <- c(km_sil[3], gmm_sil[3], hc_sil[3])
+names(k4_sil_rank) <- c("K-Means", "GMM (EEV)", "Hierarchical")
+print(sort(k4_sil_rank, decreasing = TRUE))
+
+cat("\n3. CALINSKI-HARABASZ RANKING at k=4:\n")
+k4_ch_rank <- c(km_ch[3], gmm_ch[3], hc_ch[3])
+names(k4_ch_rank) <- c("K-Means", "GMM (EEV)", "Hierarchical")
+print(sort(k4_ch_rank, decreasing = TRUE))
+
+cat("\n4. DBSCAN FINDING:\n")
+cat("   Does not converge to k=4. Rules out density-based structure.\n")
+
+cat("\n5. FUZZY C-MEANS FINDING:\n")
+cat("   Produces near-equal cluster sizes. Does not match other solutions.\n")
+cat("   Low FPC suggests boundaries are not well-defined for fuzzy approach.\n")
+```
+
+```{r}
+# K-Means k=4 cluster labels
+# KM-C1 (n=670): Culture-Affirming (lowest AMERICAN)
+# KM-C2 (n=415): Demicultural (lowest LEARNENG)
+# KM-C3 (n=2897): Bicultural
+# KM-C4 (n=803): Assimilationist (lowest DISTINCT)
+
+lns$acculturation_orientation <- case_when(
+  kmeans_k4$cluster == 1 ~ "Culture-Affirming",
+  kmeans_k4$cluster == 2 ~ "Demicultural",
+  kmeans_k4$cluster == 3 ~ "Bicultural",
+  kmeans_k4$cluster == 4 ~ "Assimilationist"
+)
+
+# Save
+save(lns, file = "lns_with_clusters_k4.rda")
+```
+
